@@ -68,13 +68,15 @@ void writeHeader(byte msgType, byte agreementVersion, byte packetLength) {
   currentHeader[9] = msgType;
 }
 
-void handleStateUpdateRequest(String requestedState, String mode, String fanSpeed, byte humiditySetpoint) {
+void handleStateUpdateRequest(String requestedState, String mode, String fanSpeed, byte humiditySetpoint, String runweb) {
   dehumidifierState_t newState;
 
   newState.powerOn = state.powerOn;
   newState.mode = state.mode;
   newState.fanSpeed = state.fanSpeed;
   newState.humiditySetpoint = state.humiditySetpoint;
+  // added
+  newState.runwebportal = state.runwebportal;
 
   if (requestedState == "on") {
     newState.powerOn = true;
@@ -104,11 +106,21 @@ void handleStateUpdateRequest(String requestedState, String mode, String fanSpee
     newState.humiditySetpoint = humiditySetpoint;
   }
 
+  // added
+  if (runweb == "on") {
+    newState.runwebportal = true;
+    wifiManager.startConfigPortal(identifier);
+  } else if (runweb == "off") {
+    newState.runwebportal = false;
+    wifiManager.stopConfigPortal();
+  }
+
   if ( //Only send if we have updates
     newState.powerOn != state.powerOn ||
     newState.mode != state.mode ||
     newState.fanSpeed != state.fanSpeed ||
-    newState.humiditySetpoint != state.humiditySetpoint
+    newState.humiditySetpoint != state.humiditySetpoint ||
+    newState.runwebportal != state.runwebportal
   ) {
     updateSetStatus(
       newState.powerOn,
@@ -124,6 +136,8 @@ void handleStateUpdateRequest(String requestedState, String mode, String fanSpee
     state.mode = newState.mode;
     state.fanSpeed = newState.fanSpeed;
     state.humiditySetpoint = newState.humiditySetpoint;
+    //added
+    state.runwebportal = newState.runwebportal;
     delay(30);
   }
 }

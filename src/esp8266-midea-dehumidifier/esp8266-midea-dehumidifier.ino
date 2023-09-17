@@ -1,3 +1,6 @@
+// usb D+ --> TX --> green
+// usb D- --> RX --> white
+
 #include "types.h"
 #include "wifi.h"
 
@@ -17,7 +20,6 @@ byte serialRxBuf[255];
 byte serialTxBuf[255];
 uint8_t mqttRetryCounter = 0;
 
-
 WiFiManager wifiManager;
 WiFiClient wifiClient;
 PubSubClient mqttClient;
@@ -27,13 +29,14 @@ WiFiManagerParameter custom_mqtt_user("user", "MQTT username", username, sizeof(
 WiFiManagerParameter custom_mqtt_pass("pass", "MQTT password", password, sizeof(password));
 
 unsigned long lastMqttConnectionAttempt = millis();
-const long mqttConnectionInterval = 60000;
+const unsigned long mqttConnectionInterval = 300000;
 
 unsigned long statusPollPreviousMillis = millis();
-const long statusPollInterval = 30000;
+const long statusPollInterval = 150000;
 
 char identifier[24];
-#define FIRMWARE_PREFIX "esp8266-midea-dehumidifier"
+
+#define FIRMWARE_PREFIX "MDDF-20DEN7-WF"
 #define AVAILABILITY_ONLINE "online"
 #define AVAILABILITY_OFFLINE "offline"
 char MQTT_TOPIC_AVAILABILITY[128];
@@ -47,7 +50,8 @@ char MQTT_TOPIC_AUTOCONF_HUMIDITY_SENSOR[128];
 char MQTT_TOPIC_AUTOCONF_FAN[128];
 char MQTT_TOPIC_AUTOCONF_HUMIDIFIER[128];
 
-
+//added
+//char MQTT_TOPIC_AUTOCONF_WEBPORTAL[128];
 
 
 bool shouldSaveConfig = false;
@@ -66,24 +70,29 @@ void setup() {
   state.humiditySetpoint = 55;
   state.currentHumidity = 45;
   state.errorCode = 0;
+  //added
+  state.runwebportal = false;
 
   delay(3000);
   updateAndSendNetworkStatus(false);
 
 
-  snprintf(identifier, sizeof(identifier), "DEHUMIDIFIER-%X", ESP.getChipId());
-  snprintf(MQTT_TOPIC_AVAILABILITY, 127, "%s/%s/status", FIRMWARE_PREFIX, identifier);
-  snprintf(MQTT_TOPIC_STATE, 127, "%s/%s/state", FIRMWARE_PREFIX, identifier);
-  snprintf(MQTT_TOPIC_COMMAND, 127, "%s/%s/command", FIRMWARE_PREFIX, identifier);
+  snprintf(identifier, sizeof(identifier), "%s-%X", FIRMWARE_PREFIX, ESP.getChipId());
+  snprintf(MQTT_TOPIC_AVAILABILITY, 127, "%s/status", FIRMWARE_PREFIX);
+  snprintf(MQTT_TOPIC_STATE, 127, "%s/state", FIRMWARE_PREFIX);
+  snprintf(MQTT_TOPIC_COMMAND, 127, "%s/command", FIRMWARE_PREFIX);
 
-  snprintf(MQTT_TOPIC_AUTOCONF_HUMIDITY_SENSOR, 127, "homeassistant/sensor/%s/%s_humidity/config", FIRMWARE_PREFIX, identifier);
-  snprintf(MQTT_TOPIC_AUTOCONF_WIFI_SENSOR, 127, "homeassistant/sensor/%s/%s_wifi/config", FIRMWARE_PREFIX, identifier);
+  snprintf(MQTT_TOPIC_AUTOCONF_HUMIDITY_SENSOR, 127, "%s/humidity/config", FIRMWARE_PREFIX);
+  snprintf(MQTT_TOPIC_AUTOCONF_WIFI_SENSOR, 127, "%s/wifi/config", FIRMWARE_PREFIX);
 
-  snprintf(MQTT_TOPIC_AUTOCONF_FAN, 127, "homeassistant/select/%s/%s_fan/config", FIRMWARE_PREFIX, identifier);
-  snprintf(MQTT_TOPIC_AUTOCONF_HUMIDIFIER, 127, "homeassistant/humidifier/%s/%s_dehumidifier/config", FIRMWARE_PREFIX, identifier);
+  snprintf(MQTT_TOPIC_AUTOCONF_FAN, 127, "%s/fan/config", FIRMWARE_PREFIX);
+  snprintf(MQTT_TOPIC_AUTOCONF_HUMIDIFIER, 127, "%s/dehumidifier/config", FIRMWARE_PREFIX);
+
+  //added
+  //snprintf(MQTT_TOPIC_AUTOCONF_WEBPORTAL, 127, "%s/webportal/config", FIRMWARE_PREFIX);
 
 
-  WiFi.hostname(identifier);
+  WiFi.setHostname(identifier);
 
   loadConfig();
 
@@ -95,6 +104,10 @@ void setup() {
   mqttClient.setCallback(mqttCallback);
 
   mqttReconnect();
+
+  //added initially send states
+  publishState();
+  
 }
 
 void setupOTA() {
@@ -122,6 +135,7 @@ void setupOTA() {
   ArduinoOTA.setHostname(identifier);
 
   //This is less of a security measure and more a accidential flash prevention
+  //only works for modules without flash / run switch like wemos d1 mini, not working with "serial wifi" module
   ArduinoOTA.setPassword(identifier);
   ArduinoOTA.begin();
 }
@@ -141,17 +155,22 @@ void loop() {
     lastMqttConnectionAttempt = millis();
     mqttReconnect();
   }
+
 }
 
 void setupWifi() {
   wifiManager.setDebugOutput(false);
   wifiManager.setSaveConfigCallback(saveConfigCallback);
+  //wifiManager.setHttpPort(8080);
+  wifiManager.setConfigPortalBlocking(true);
 
   wifiManager.addParameter(&custom_mqtt_server);
   wifiManager.addParameter(&custom_mqtt_user);
   wifiManager.addParameter(&custom_mqtt_pass);
 
   WiFi.hostname(identifier);
+  
+  wifiManager.setHostname(identifier);
   wifiManager.autoConnect(identifier);
   mqttClient.setClient(wifiClient);
 
@@ -239,6 +258,9 @@ void publishState() {
       break;
   }
 
+  //added
+  stateJson["webportal"] = state.runwebportal ? "on" : "off";
+  
   stateJson["wifi"] = wifiJson.as<JsonObject>();
 
   serializeJson(stateJson, payload);
@@ -259,10 +281,14 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         commandJson["state"].as<String>(),
         commandJson["mode"].as<String>(),
         commandJson["fanSpeed"].as<String>(),
-        commandJson["humiditySetpoint"].as<byte>()
+        commandJson["humiditySetpoint"].as<byte>(),
+        // added
+        commandJson["webportal"].as<String>()
       );
 
       getStatus();
+      //webactive = commandJson["startweb"].as<byte>();
+      
     }
   }
 }
@@ -278,21 +304,21 @@ void publishAutoConfig() {
 
   device["identifiers"] = identifiers;
   device["manufacturer"] = "Midea Group Co., Ltd.";
-  device["model"] = "Generic Dehumidifier";
+  device["model"] = FIRMWARE_PREFIX;
   device["name"] = identifier;
-  device["sw_version"] = "2023.08.0";
+  device["sw_version"] = "2023.09.6";
 
 
-  autoconfPayload["device"] = device.as<JsonObject>();
-  autoconfPayload["availability_topic"] = MQTT_TOPIC_AVAILABILITY;
-  autoconfPayload["state_topic"] = MQTT_TOPIC_STATE;
-  autoconfPayload["name"] = "WiFi";
-  autoconfPayload["value_template"] = "{{value_json.wifi.rssi}}";
-  autoconfPayload["unique_id"] = identifier + String("_wifi");
-  autoconfPayload["unit_of_measurement"] = "dBm";
-  autoconfPayload["json_attributes_topic"] = MQTT_TOPIC_STATE;
-  autoconfPayload["json_attributes_template"] = "{\"ssid\": \"{{value_json.wifi.ssid}}\", \"ip\": \"{{value_json.wifi.ip}}\"}";
-  autoconfPayload["icon"] = "mdi:wifi";
+  //autoconfPayload["device"] = device.as<JsonObject>();
+  //autoconfPayload["availability_topic"] = MQTT_TOPIC_AVAILABILITY;
+  //autoconfPayload["state_topic"] = MQTT_TOPIC_STATE;
+  //autoconfPayload["name"] = identifier + String(" WiFi");
+  //autoconfPayload["value_template"] = "{{value_json.wifi.rssi}}";
+  //autoconfPayload["unique_id"] = identifier + String("_wifi");
+  //autoconfPayload["unit_of_measurement"] = "dBm";
+  //autoconfPayload["json_attributes_topic"] = MQTT_TOPIC_STATE;
+  //autoconfPayload["json_attributes_template"] = "{\"ssid\": \"{{value_json.wifi.ssid}}\", \"ip\": \"{{value_json.wifi.ip}}\"}";
+  //autoconfPayload["icon"] = "mdi:wifi";
 
   serializeJson(autoconfPayload, mqttPayload);
   mqttClient.publish(MQTT_TOPIC_AUTOCONF_WIFI_SENSOR, mqttPayload, true);
@@ -300,14 +326,14 @@ void publishAutoConfig() {
   autoconfPayload.clear();
 
 
-  autoconfPayload["device"] = device.as<JsonObject>();
-  autoconfPayload["availability_topic"] = MQTT_TOPIC_AVAILABILITY;
-  autoconfPayload["state_topic"] = MQTT_TOPIC_STATE;
-  autoconfPayload["name"] = "Humidity";
-  autoconfPayload["device_class"] = "humidity";
-  autoconfPayload["unit_of_measurement"] = "%";
-  autoconfPayload["value_template"] = "{{value_json.humidityCurrent}}";
-  autoconfPayload["unique_id"] = identifier + String("_humidity");
+  //autoconfPayload["device"] = device.as<JsonObject>();
+  //autoconfPayload["availability_topic"] = MQTT_TOPIC_AVAILABILITY;
+  //autoconfPayload["state_topic"] = MQTT_TOPIC_STATE;
+  //autoconfPayload["name"] = identifier + String(" Humidity");
+  //autoconfPayload["device_class"] = "humidity";
+  //autoconfPayload["unit_of_measurement"] = "%";
+  //autoconfPayload["value_template"] = "{{value_json.humidityCurrent}}";
+  //autoconfPayload["unique_id"] = identifier + String("_humidity");
 
   serializeJson(autoconfPayload, mqttPayload);
   mqttClient.publish(MQTT_TOPIC_AUTOCONF_HUMIDITY_SENSOR, mqttPayload, true);
@@ -315,27 +341,26 @@ void publishAutoConfig() {
   autoconfPayload.clear();
 
 
-  StaticJsonDocument<64> optionsDoc;
-  JsonArray speedOptions = optionsDoc.to<JsonArray>();
+  StaticJsonDocument<64> speedsDoc;
+  JsonArray speeds = speedsDoc.to<JsonArray>();
 
-  speedOptions.add("low");
-  speedOptions.add("medium");
-  speedOptions.add("high");
+  speeds.add("low");
+  speeds.add("medium");
+  speeds.add("high");
 
-  autoconfPayload["device"] = device.as<JsonObject>();
-  autoconfPayload["availability_topic"] = MQTT_TOPIC_AVAILABILITY;
-  autoconfPayload["name"] = "Fan";
-  autoconfPayload["unique_id"] = identifier + String("_fan");
-  autoconfPayload["icon"] = "mdi:fan";
+  //autoconfPayload["device"] = device.as<JsonObject>();
+  //autoconfPayload["availability_topic"] = MQTT_TOPIC_AVAILABILITY;
+  //autoconfPayload["name"] = identifier + String(" Fan");
+  //autoconfPayload["unique_id"] = identifier + String("_fan");
 
-  autoconfPayload["state_topic"] = MQTT_TOPIC_STATE;
-  autoconfPayload["command_topic"] = MQTT_TOPIC_COMMAND;
+  //autoconfPayload["state_topic"] = MQTT_TOPIC_STATE;
+  //autoconfPayload["command_topic"] = MQTT_TOPIC_COMMAND;
 
-  autoconfPayload["options"] = speedOptions;
-  autoconfPayload["state_topic"] = MQTT_TOPIC_STATE;
-  autoconfPayload["command_topic"] = MQTT_TOPIC_COMMAND;
-  autoconfPayload["value_template"] = "{{value_json.fanSpeed}}";
-  autoconfPayload["command_template"] = "{\"fanSpeed\": \"{{value}}\"}";
+  autoconfPayload["preset_modes"] = speeds;
+  autoconfPayload["preset_mode_state_topic"] = MQTT_TOPIC_STATE;
+  autoconfPayload["preset_mode_command_topic"] = MQTT_TOPIC_COMMAND;
+  //autoconfPayload["preset_mode_value_template"] = "{{value_json.fanSpeed}}";
+  autoconfPayload["preset_mode_command_template"] = "{\"fanSpeed\": \"value\"}";
 
   serializeJson(autoconfPayload, mqttPayload);
   mqttClient.publish(MQTT_TOPIC_AUTOCONF_FAN, mqttPayload, true);
@@ -345,7 +370,7 @@ void publishAutoConfig() {
 
   autoconfPayload["device"] = device.as<JsonObject>();
   autoconfPayload["availability_topic"] = MQTT_TOPIC_AVAILABILITY;
-  autoconfPayload["name"] = "Dehumidifier";
+  autoconfPayload["name"] = identifier + String(" Dehumidifier");
   autoconfPayload["unique_id"] = identifier + String("_dehumidifier");
   autoconfPayload["device_class"] = "dehumidifier";
 
@@ -353,11 +378,11 @@ void publishAutoConfig() {
   autoconfPayload["min_humidity"] = 35;
 
   autoconfPayload["state_topic"] = MQTT_TOPIC_STATE;
-  autoconfPayload["state_value_template"] = "{\"state\": \"{{value_json.state}}\"}";
-  autoconfPayload["payload_on"] = "{\"state\": \"on\"}";
-  autoconfPayload["payload_off"] = "{\"state\": \"off\"}";
+  //autoconfPayload["state_value_template"] = "{\"state\": \"{{value_json.state}}\"}";
+  //autoconfPayload["payload_on"] = "{\"state\": \"on\"}";
+  //autoconfPayload["payload_off"] = "{\"state\": \"off\"}";
   autoconfPayload["command_topic"] = MQTT_TOPIC_COMMAND;
-  autoconfPayload["state_value_template"] = "{\"state\": \"{{value_json.state}}\"}";
+  //autoconfPayload["state_value_template"] = "{\"state\": \"{{value_json.state}}\"}";
   autoconfPayload["payload_on"] = "{\"state\": \"on\"}";
   autoconfPayload["payload_off"] = "{\"state\": \"off\"}";
 
@@ -366,8 +391,8 @@ void publishAutoConfig() {
 
   autoconfPayload["target_humidity_state_topic"] = MQTT_TOPIC_STATE;
   autoconfPayload["target_humidity_command_topic"] = MQTT_TOPIC_COMMAND;
-  autoconfPayload["target_humidity_state_template"] = "{{value_json.humiditySetpoint | int}}";
-  autoconfPayload["target_humidity_command_template"] = "{\"humiditySetpoint\": {{value | int}}}";
+  //autoconfPayload["target_humidity_state_template"] = "{{value_json.humiditySetpoint | int}}";
+  //autoconfPayload["target_humidity_command_template"] = "{\"humiditySetpoint\": {{value | int}}}";
 
   modes.add("setpoint");
   modes.add("continuous");
@@ -377,8 +402,8 @@ void publishAutoConfig() {
   autoconfPayload["modes"] = modes;
   autoconfPayload["mode_state_topic"] = MQTT_TOPIC_STATE;
   autoconfPayload["mode_command_topic"] = MQTT_TOPIC_COMMAND;
-  autoconfPayload["mode_state_template"] = "{{value_json.mode}}";
-  autoconfPayload["mode_command_template"] = "{\"mode\": \"{{value}}\"}";
+  //autoconfPayload["mode_state_template"] = "{{value_json.mode}}";
+  autoconfPayload["mode_command_template"] = "{\"mode\": \"value\"}";
 
   serializeJson(autoconfPayload, mqttPayload);
   mqttClient.publish(MQTT_TOPIC_AUTOCONF_HUMIDIFIER, mqttPayload, true);
